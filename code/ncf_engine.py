@@ -1,7 +1,3 @@
-# ncf_engine.py
-from __future__ import annotations
-
-import os
 import pickle
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -42,6 +38,9 @@ ncf_model = None
 
 # training triplets
 train_triplets = None
+val_triplets = None
+test_triplets = None
+
 user_rated_items = None
 
 
@@ -111,19 +110,19 @@ class NCFHybrid(nn.Module):
         )
 
     def forward(self, user_idx, item_idx, gender, age, occupation):
-        u_base = self.user_emb(user_idx)
-        g = self.gender_emb(gender)
-        a = self.age_emb(age)
-        o = self.occ_emb(occupation)
+        user_emb = self.user_emb(user_idx)
+        gender_emb = self.gender_emb(gender)
+        age_emb = self.age_emb(age)
+        occ_emb = self.occ_emb(occupation)
 
-        u_concat = torch.cat([u_base, g, a, o], dim=-1)
+        u_concat = torch.cat([user_emb, gender_emb, age_emb, occ_emb], dim=-1)
         u_repr = self.user_mlp(u_concat)
 
-        i_base = self.item_emb(item_idx)
+        item_emb = self.item_emb(item_idx)
         g_multi = self.item_genre_multi_hot[item_idx]
         genre_vec = g_multi @ self.genre_emb.weight
 
-        i_concat = torch.cat([i_base, genre_vec], dim=-1)
+        i_concat = torch.cat([item_emb, genre_vec], dim=-1)
         i_repr = self.item_mlp(i_concat)
 
         x = torch.cat([u_repr, i_repr], dim=-1)
@@ -160,136 +159,153 @@ class NCFDataset(Dataset):
         )
 
 
-def initialise(sample_n: int = 100_000) -> None:
-    """
-    Rebuilds the same mappings as your notebook (sampling ratings),
-    builds item genres, loads user.dat features, trains NCF.
-    """
+def initialise(sample_n=100000):
     global _READY
     global user_map, reverse_item_map, movieid_to_title
     global num_users, num_items, global_mean
     global user_gender, user_age, user_occupation
     global num_genres, item_genre_matrix
     global device, ncf_model
-    global train_triplets, user_rated_items
+    global train_triplets, val_triplets, test_triplets, user_rated_items
 
     if _READY:
         return
 
-        # Try load cache first
     if _load_cache():
         return
 
+    if not _load_shared_preprocessed():
+        raise RuntimeError(
+            "Missing cache/preprocessed_shared.pkl. "
+            "Run hybrid_engine once with ../dataset present to generate it."
+        )
+
     p = _paths()
 
-    ratings_df = pd.read_csv(
-        p["ratings"],
-        sep="::",
-        engine="python",
-        encoding="latin-1",
-        names=["userId", "movieId", "rating", "timestamp"],
-    )
-    movies_df = pd.read_csv(
-        p["movies"],
-        sep="::",
-        engine="python",
-        encoding="latin-1",
-        names=["movieId", "title", "genres"],
-    )
-    movieid_to_title = dict(zip(movies_df["movieId"], movies_df["title"]))
+    # ratings_df = pd.read_csv(
+    #     p["ratings"],
+    #     sep="::",
+    #     engine="python",
+    #     encoding="latin-1",
+    #     names=["userId", "movieId", "rating", "timestamp"],
+    # )
+    # movies_df = pd.read_csv(
+    #     p["movies"],
+    #     sep="::",
+    #     engine="python",
+    #     encoding="latin-1",
+    #     names=["movieId", "title", "genres"],
+    # )
+    # movieid_to_title = dict(zip(movies_df["movieId"], movies_df["title"]))
 
-    # weighted sampling (same idea)
-    user_counts_full = ratings_df["userId"].value_counts()
-    DENSE_THRESHOLD_FULL = 100
+    # # weighted sampling (same as RS1)
+    # user_counts_full = ratings_df["userId"].value_counts()
+    # DENSE_THRESHOLD_FULL = 100
 
-    def user_weight(u):
-        c = user_counts_full[u]
-        base = np.log1p(c)
-        return base * 100 if c >= DENSE_THRESHOLD_FULL else base
+    # def user_weight(u):
+    #     c = user_counts_full[u]
+    #     base = np.log1p(c)
+    #     return base * 100 if c >= DENSE_THRESHOLD_FULL else base
 
-    weights = ratings_df["userId"].map(user_weight)
-    ratings_sample = ratings_df.sample(
-        n=sample_n,
-        weights=weights,
-        random_state=0,
-    ).reset_index(drop=True)
+    # weights = ratings_df["userId"].map(user_weight)
+    # ratings_sample = ratings_df.sample(
+    #     n=sample_n,
+    #     weights=weights,
+    #     random_state=0,
+    # ).reset_index(drop=True)
 
-    # mappings
-    user_map = {old: new for new, old in enumerate(ratings_sample["userId"].unique())}
-    ratings_sample["user_idx"] = ratings_sample["userId"].map(user_map)
+    # # mappings
+    # user_map = {old: new for new, old in enumerate(ratings_sample["userId"].unique())}
+    # ratings_sample["user_idx"] = ratings_sample["userId"].map(user_map)
 
-    item_map = {old: new for new, old in enumerate(ratings_sample["movieId"].unique())}
-    ratings_sample["item_idx"] = ratings_sample["movieId"].map(item_map)
-    reverse_item_map = {new: old for old, new in item_map.items()}
+    # item_map = {old: new for new, old in enumerate(ratings_sample["movieId"].unique())}
+    # ratings_sample["item_idx"] = ratings_sample["movieId"].map(item_map)
+    # reverse_item_map = {new: old for old, new in item_map.items()}
 
-    num_users = int(ratings_sample["user_idx"].nunique())
-    num_items = int(ratings_sample["item_idx"].nunique())
+    # num_users = int(ratings_sample["user_idx"].nunique())
+    # num_items = int(ratings_sample["item_idx"].nunique())
 
-    triplets = [
-        (int(u), int(i), float(r))
-        for u, i, r in zip(
-            ratings_sample["user_idx"],
-            ratings_sample["item_idx"],
-            ratings_sample["rating"],
-        )
-    ]
+    # triplets = [
+    #     (int(u), int(i), float(r))
+    #     for u, i, r in zip(
+    #         ratings_sample["user_idx"],
+    #         ratings_sample["item_idx"],
+    #         ratings_sample["rating"],
+    #     )
+    # ]
 
-    # dense users only for training (your style)
-    user_counts_all = Counter(u for u, _, _ in triplets)
-    dense_users = {u for u, c in user_counts_all.items() if c >= 20}
-    dense_triplets = [t for t in triplets if t[0] in dense_users]
-    random.shuffle(dense_triplets)
+    # # ---------- Dense users split ----------
+    # user_counts_all = Counter(u for u, _, _ in triplets)
+    # DENSE_THRESHOLD = 20
+    # dense_users = {u for u, c in user_counts_all.items() if c >= DENSE_THRESHOLD}
 
-    train_end = int(0.6 * len(dense_triplets))
-    train_triplets = dense_triplets[:train_end]
+    # dense_triplets = [t for t in triplets if t[0] in dense_users]
+    # random.shuffle(dense_triplets)
 
-    global_mean = float(np.mean([r for _, _, r in train_triplets]))
+    # n_dense = len(dense_triplets)
+    # train_end = int(0.6 * n_dense)
+    # val_end = int(0.8 * n_dense)
 
-    # item genres matrix
-    all_genres = set()
-    for g_str in movies_df["genres"]:
-        for g in str(g_str).split("|"):
-            g = g.strip()
-            if g and g != "(no genres listed)":
-                all_genres.add(g)
-    all_genres = sorted(all_genres)
-    genre_to_idx = {g: idx for idx, g in enumerate(all_genres)}
-    num_genres = len(all_genres)
+    # train_triplets = dense_triplets[:train_end]
+    # val_triplets = dense_triplets[train_end:val_end]  # optional, may not use
+    # test_triplets = dense_triplets[val_end:]
 
-    item_genre_matrix = np.zeros((num_items, num_genres), dtype=np.float32)
-    movie_genres_map = dict(zip(movies_df["movieId"], movies_df["genres"]))
-    for internal_i in range(num_items):
-        movie_id = reverse_item_map[internal_i]
-        g_str = movie_genres_map.get(movie_id, "")
-        for g in str(g_str).split("|"):
-            g = g.strip()
-            if g in genre_to_idx:
-                item_genre_matrix[internal_i, genre_to_idx[g]] = 1.0
+    _build_features_from_dataset()
 
-    # user features from users.dat
-    users_raw = pd.read_csv(
-        p["users"],
-        sep="::",
-        engine="python",
-        names=["user_id", "gender", "age", "occupation", "zipcode"],
-    )
-    users_df = users_raw.copy()
-    users_df["gender"] = users_df["gender"].map({"M": 0, "F": 1}).astype(np.int64)
-    users_df["age"] = users_df["age"].astype(np.int64)
-    users_df["occupation"] = users_df["occupation"].astype(np.int64)
+    # global_mean = float(np.mean([r for _, _, r in train_triplets]))
 
-    users_df["user_idx"] = users_df["user_id"].map(user_map)
-    users_df = users_df.dropna(subset=["user_idx"]).copy()
-    users_df["user_idx"] = users_df["user_idx"].astype(int)
+    # # item genres matrix
+    # all_genres = set()
+    # for g_str in movies_df["genres"]:
+    #     for g in str(g_str).split("|"):
+    #         g = g.strip()
 
-    feat = users_df[["user_idx", "gender", "age", "occupation"]].sort_values("user_idx")
-    feat = feat.set_index("user_idx").reindex(range(num_users))
-    if feat.isna().sum().sum() != 0:
-        raise RuntimeError("Missing user features after reindexing; mapping mismatch.")
+    #         if g and g != "(no genres listed)":
+    #             all_genres.add(g)
 
-    user_gender = feat["gender"].values.astype(np.int64)
-    user_age = feat["age"].values.astype(np.int64)
-    user_occupation = feat["occupation"].values.astype(np.int64)
+    # all_genres = sorted(all_genres)
+    # genre_to_idx = {g: idx for idx, g in enumerate(all_genres)}
+    # num_genres = len(all_genres)
+
+    # item_genre_matrix = np.zeros((num_items, num_genres), dtype=np.float32)
+    # movie_genres_map = dict(zip(movies_df["movieId"], movies_df["genres"]))
+
+    # for internal_i in range(num_items):
+    #     movie_id = reverse_item_map[internal_i]
+    #     g_str = movie_genres_map.get(movie_id, "")
+
+    #     for g in str(g_str).split("|"):
+    #         g = g.strip()
+
+    #         if g in genre_to_idx:
+    #             item_genre_matrix[internal_i, genre_to_idx[g]] = 1.0
+
+    # # user features from users.dat
+    # users_raw = pd.read_csv(
+    #     p["users"],
+    #     sep="::",
+    #     engine="python",
+    #     names=["user_id", "gender", "age", "occupation", "zipcode"],
+    # )
+
+    # users_df = users_raw.copy()
+    # users_df["gender"] = users_df["gender"].map({"M": 0, "F": 1}).astype(np.int64)
+    # users_df["age"] = users_df["age"].astype(np.int64)
+    # users_df["occupation"] = users_df["occupation"].astype(np.int64)
+
+    # users_df["user_idx"] = users_df["user_id"].map(user_map)
+    # users_df = users_df.dropna(subset=["user_idx"]).copy()
+    # users_df["user_idx"] = users_df["user_idx"].astype(int)
+
+    # feat = users_df[["user_idx", "gender", "age", "occupation"]].sort_values("user_idx")
+    # feat = feat.set_index("user_idx").reindex(range(num_users))
+
+    # if feat.isna().sum().sum() != 0:
+    #     raise RuntimeError("Missing user features after reindexing; mapping mismatch.")
+
+    # user_gender = feat["gender"].values.astype(np.int64)
+    # user_age = feat["age"].values.astype(np.int64)
+    # user_occupation = feat["occupation"].values.astype(np.int64)
 
     # model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -312,16 +328,16 @@ def initialise(sample_n: int = 100_000) -> None:
     ).to(device)
 
     # training
-    train_ds = NCFDataset(train_triplets)
-    train_loader = DataLoader(train_ds, batch_size=1024, shuffle=True)
+    train_dataset = NCFDataset(train_triplets)
+    train_loader = DataLoader(train_dataset, batch_size=1024, shuffle=True)
 
     criterion = nn.MSELoss()
-    optimiser = torch.optim.Adam(ncf_model.parameters(), lr=0.001, weight_decay=1e-5)
+    optimiser = torch.optim.Adam(ncf_model.parameters(), lr=0.001, weight_decay=0.00001)
 
     ncf_model.train()
-    num_epochs = 10  # keep CLI init reasonable; bump if you want
+    num_epochs = 15
     for epoch in range(1, num_epochs + 1):
-        running = 0.0
+        running = 0
         n = 0
         for u, i, g, a, o, r in train_loader:
             u, i, g, a, o, r = (
@@ -342,11 +358,9 @@ def initialise(sample_n: int = 100_000) -> None:
             running += loss.item() * r.size(0)
             n += r.size(0)
 
-        if epoch in {1, 5, 10}:
+        if epoch in {1, 5, 10, 15}:
             train_rmse = float(np.sqrt(running / n))
-            print(
-                f"[NCF init] Epoch {epoch:02d}/{num_epochs} | train RMSE: {train_rmse:.4f}"
-            )
+            print(f"[NCF init] Epoch {epoch}/{num_epochs} | train RMSE: {train_rmse}")
 
     # exclude already-rated (train)
     user_rated_items = defaultdict(set)
@@ -356,10 +370,10 @@ def initialise(sample_n: int = 100_000) -> None:
     _READY = True
 
     _save_cache()
-    print("[Hybrid] Saved cache.")
+    # print("[Hybrid] Saved cache and preprocessed data.")
 
 
-def user_exists(user_id: str) -> bool:
+def user_exists(user_id):
     if not _READY:
         raise RuntimeError("Call initialise() first.")
     try:
@@ -369,17 +383,14 @@ def user_exists(user_id: str) -> bool:
     return uid in user_map
 
 
-def random_user_id() -> str:
+def random_user_id():
     if not _READY:
         raise RuntimeError("Call initialise() first.")
     return str(random.choice(list(user_map.keys())))
 
 
-def recommend(user_id: str, k: int = 10):
-    """
-    Returns list[(title, predicted_rating)] using NCF.
-    Uses batching so it’s not painfully slow.
-    """
+# Returns list[(title, predicted_rating)] using NCF
+def recommend(user_id, k=10):
     if not _READY:
         raise RuntimeError("Call initialise() first.")
 
@@ -393,26 +404,38 @@ def recommend(user_id: str, k: int = 10):
 
     ncf_model.eval()
 
-    g = int(user_gender[u])
-    a = int(user_age[u])
-    o = int(user_occupation[u])
+    gender = int(user_gender[u])
+    age = int(user_age[u])
+    occupation = int(user_occupation[u])
 
     scores = []
-    bs = 2048
+    batch_size = 2048
 
     with torch.no_grad():
-        for start in range(0, len(candidates), bs):
-            batch_items = candidates[start : start + bs]
 
-            u_t = torch.full((len(batch_items),), u, dtype=torch.long, device=device)
-            i_t = torch.tensor(batch_items, dtype=torch.long, device=device)
-            g_t = torch.full((len(batch_items),), g, dtype=torch.long, device=device)
-            a_t = torch.full((len(batch_items),), a, dtype=torch.long, device=device)
-            o_t = torch.full((len(batch_items),), o, dtype=torch.long, device=device)
+        for start in range(0, len(candidates), batch_size):
 
-            pred = ncf_model(u_t, i_t, g_t, a_t, o_t).detach().cpu().numpy()
-            for s, item_idx in zip(pred, batch_items):
-                scores.append((float(s), int(item_idx)))
+            # Select a batch of candidate items to score
+            items_batch = candidates[start : start + batch_size]
+            B = len(items_batch)
+
+            user_batch = torch.full((B,), u, device=device)
+            gender_batch = torch.full((B,), gender, device=device)
+            age_batch = torch.full((B,), age, device=device)
+            occupation_batch = torch.full((B,), occupation, device=device)
+
+            item_batch = torch.tensor(items_batch, device=device)
+
+            predictions = ncf_model(
+                user_batch,
+                item_batch,
+                gender_batch,
+                age_batch,
+                occupation_batch,
+            )
+
+            for score, item_idx in zip(predictions.cpu().numpy(), items_batch):
+                scores.append((float(score), item_idx))
 
     scores.sort(reverse=True, key=lambda x: x[0])
     top = scores[:k]
@@ -426,23 +449,23 @@ def recommend(user_id: str, k: int = 10):
     return out
 
 
-def _cache_dir() -> Path:
+def _cache_dir():
     here = Path(__file__).resolve().parent
-    d = (here / "cache").resolve()
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    dir = (here / "cache").resolve()
+    dir.mkdir(parents=True, exist_ok=True)
+    return dir
 
 
 def _cache_paths():
-    d = _cache_dir()
+    dir = _cache_dir()
     return {
-        "pt": d / "ncf_model.pt",
-        "npz": d / "ncf_arrays.npz",
-        "pkl": d / "ncf_meta.pkl",
+        "pt": dir / "ncf_model.pt",
+        "npz": dir / "ncf_arrays.npz",
+        "pkl": dir / "ncf_meta.pkl",
     }
 
 
-def _save_cache() -> None:
+def _save_cache():
     paths = _cache_paths()
 
     # torch weights
@@ -471,7 +494,7 @@ def _save_cache() -> None:
         pickle.dump(meta, f)
 
 
-def _load_cache() -> bool:
+def _load_cache():
     global _READY
     global user_map, reverse_item_map, movieid_to_title
     global num_users, num_items, num_genres, global_mean
@@ -534,3 +557,99 @@ def _load_cache() -> bool:
     except Exception as e:
         print(f"[NCF] Cache load failed, will retrain. Reason: {e}")
         return False
+
+
+def _build_features_from_dataset():
+    global movieid_to_title
+    global num_users, num_items, num_genres, global_mean
+    global item_genre_matrix, user_gender, user_age, user_occupation
+
+    p = _paths()
+
+    movies_df = pd.read_csv(
+        p["movies"],
+        sep="::",
+        engine="python",
+        encoding="latin-1",
+        names=["movieId", "title", "genres"],
+    )
+    movieid_to_title = dict(zip(movies_df["movieId"], movies_df["title"]))
+
+    num_users = len(user_map)
+    num_items = len(reverse_item_map)
+
+    global_mean = float(np.mean([r for _, _, r in train_triplets]))
+
+    all_genres = set()
+    for g_str in movies_df["genres"]:
+        for g in str(g_str).split("|"):
+            g = g.strip()
+            if g and g != "(no genres listed)":
+                all_genres.add(g)
+
+    all_genres = sorted(all_genres)
+    genre_to_idx = {g: idx for idx, g in enumerate(all_genres)}
+    num_genres = len(all_genres)
+
+    item_genre_matrix = np.zeros((num_items, num_genres), dtype=np.float32)
+    movie_genres_map = dict(zip(movies_df["movieId"], movies_df["genres"]))
+
+    for internal_i in range(num_items):
+        movie_id = reverse_item_map[internal_i]
+        g_str = movie_genres_map.get(movie_id, "")
+
+        for g in str(g_str).split("|"):
+            g = g.strip()
+
+            if g in genre_to_idx:
+                item_genre_matrix[internal_i, genre_to_idx[g]] = 1.0
+
+    # users.dat -> features aligned to user_idx
+    users_raw = pd.read_csv(
+        p["users"],
+        sep="::",
+        engine="python",
+        names=["user_id", "gender", "age", "occupation", "zipcode"],
+    )
+
+    users_df = users_raw.copy()
+    users_df["gender"] = users_df["gender"].map({"M": 0, "F": 1}).astype(np.int64)
+    users_df["age"] = users_df["age"].astype(np.int64)
+    users_df["occupation"] = users_df["occupation"].astype(np.int64)
+
+    users_df["user_idx"] = users_df["user_id"].map(user_map)
+    users_df = users_df.dropna(subset=["user_idx"]).copy()
+    users_df["user_idx"] = users_df["user_idx"].astype(int)
+
+    feat = users_df[["user_idx", "gender", "age", "occupation"]].sort_values("user_idx")
+    feat = feat.set_index("user_idx").reindex(range(num_users))
+
+    if feat.isna().sum().sum() != 0:
+        raise RuntimeError("Missing user features after reindexing; mapping mismatch.")
+
+    user_gender = feat["gender"].values.astype(np.int64)
+    user_age = feat["age"].values.astype(np.int64)
+    user_occupation = feat["occupation"].values.astype(np.int64)
+
+
+def _shared_prep_path():
+    return _cache_dir() / "preprocessed_shared.pkl"
+
+
+def _load_shared_preprocessed():
+    global user_map, reverse_item_map
+    global train_triplets, val_triplets, test_triplets
+
+    path = _shared_prep_path()
+    if not path.exists():
+        return False
+
+    with open(path, "rb") as f:
+        payload = pickle.load(f)
+
+    user_map = payload["user_map"]
+    reverse_item_map = payload["reverse_item_map"]
+    train_triplets = payload["train_triplets"]
+    val_triplets = payload["val_triplets"]
+    test_triplets = payload["test_triplets"]
+    return True

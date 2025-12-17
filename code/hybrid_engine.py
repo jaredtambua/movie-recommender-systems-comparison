@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import os
 import pickle
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -24,6 +21,7 @@ reverse_item_map = None  # item_idx -> original movieId
 num_users = None
 num_items = None
 
+# CF bits
 global_mean = None
 user_bias = None
 item_bias = None
@@ -38,6 +36,9 @@ user_profiles = None
 
 # hybrid bits
 train_triplets = None
+val_triplets = None
+test_triplets = None
+
 item_train_counts = None
 ITEM_MIN_CF = 5
 ALPHA = 0.9
@@ -59,14 +60,14 @@ def _paths():
 
 
 # Loads data, samples ratings, trains SVD on dense users, builds CBF profiles, and prepares a hybrid scorer.
-def initialise(sample_n=100_000):
+def initialise(sample_n=100000):
     global _READY
     global ratings_sample, movies_df
     global user_map, item_map, reverse_item_map
     global num_users, num_items
     global global_mean, user_bias, item_bias, user_factors, item_factors
     global genre_to_idx, num_genres, item_genre_matrix, user_profiles
-    global train_triplets, item_train_counts, user_rated_items
+    global train_triplets, val_triplets, test_triplets, item_train_counts, user_rated_items
     global movieid_to_title
 
     if _READY:
@@ -74,6 +75,8 @@ def initialise(sample_n=100_000):
 
     # Try load cache first
     if _load_cache():
+        if not _load_shared_preprocessed():
+            _write_shared_from_cache_only()
         return
 
     p = _paths()
@@ -97,12 +100,12 @@ def initialise(sample_n=100_000):
 
     # ---------- Weighted sampling  ----------
     user_counts_full = ratings_df["userId"].value_counts()
-    DENSE_THRESHOLD_FULL = 100
+    DENSE_THRESHOLD_WEIGHT = 100
 
     def user_weight(u):
         c = user_counts_full[u]
         base = np.log1p(c)
-        return base * 100 if c >= DENSE_THRESHOLD_FULL else base
+        return base * 100 if c >= DENSE_THRESHOLD_WEIGHT else base
 
     weights = ratings_df["userId"].map(user_weight)
     ratings_sample = ratings_df.sample(
@@ -137,6 +140,8 @@ def initialise(sample_n=100_000):
     dense_users = {u for u, c in user_counts_all.items() if c >= DENSE_THRESHOLD}
 
     dense_triplets = [t for t in triplets if t[0] in dense_users]
+    sparse_triplets = [t for t in triplets if t[0] not in dense_users]  # <-- NEW
+
     random.shuffle(dense_triplets)
 
     n_dense = len(dense_triplets)
@@ -144,9 +149,15 @@ def initialise(sample_n=100_000):
     val_end = int(0.8 * n_dense)
 
     train_triplets = dense_triplets[:train_end]
-    val_triplets = dense_triplets[
-        train_end:val_end
-    ]  # not used by CLI, but used to train
+    val_triplets = dense_triplets[train_end:val_end]
+    test_dense = dense_triplets[val_end:]
+
+    test_triplets = test_dense + sparse_triplets
+
+    random.shuffle(test_triplets)
+
+    _save_shared_preprocessed(train_triplets, val_triplets, test_triplets)
+    print(f"[Hyrbid] saved preprocessed dataset")
 
     # ---------- Train SVD (SGD) ----------
     num_factors = 20
@@ -170,11 +181,11 @@ def initialise(sample_n=100_000):
         )
 
     def rmse(trips):
-        se = 0.0
+        squared_err = 0
         for u, i, r in trips:
-            e = r - svd_pred(u, i)
-            se += e * e
-        return float(np.sqrt(se / len(trips)))
+            err = r - svd_pred(u, i)
+            squared_err += err**2
+        return float(np.sqrt(squared_err / len(trips)))
 
     for epoch in range(1, num_epochs + 1):
         random.shuffle(train_triplets)
@@ -185,6 +196,7 @@ def initialise(sample_n=100_000):
             pu = user_factors[u].copy()
             qi = item_factors[i].copy()
 
+            # stochastic gradient descent update for SVD parameters
             user_bias[u] += learning_rate * (err - reg * user_bias[u])
             item_bias[i] += learning_rate * (err - reg * item_bias[i])
 
@@ -193,7 +205,7 @@ def initialise(sample_n=100_000):
 
         if epoch in {1, 5, 10, 20}:
             print(
-                f"[Hybrid init] Epoch {epoch:02d}/{num_epochs} | val RMSE: {rmse(val_triplets):.4f}"
+                f"[Hybrid init] Epoch {epoch}/{num_epochs} | val RMSE: {rmse(val_triplets)}"
             )
 
     # ---------- Build CBF (genres) ----------
@@ -201,21 +213,25 @@ def initialise(sample_n=100_000):
     for g_str in movies_df["genres"]:
         for g in str(g_str).split("|"):
             g = g.strip()
-            if g and g != "(no genres listed)":
+
+            if g:
                 all_genres.add(g)
 
     all_genres = sorted(all_genres)
     genre_to_idx = {g: idx for idx, g in enumerate(all_genres)}
     num_genres = len(all_genres)
 
+    # multi-hot encoding matrix
     item_genre_matrix = np.zeros((num_items, num_genres), dtype=np.float32)
     movie_genres_map = dict(zip(movies_df["movieId"], movies_df["genres"]))
 
     for internal_i in range(num_items):
         movie_id = reverse_item_map[internal_i]
         g_str = movie_genres_map.get(movie_id, "")
+
         for g in str(g_str).split("|"):
             g = g.strip()
+
             if g in genre_to_idx:
                 item_genre_matrix[internal_i, genre_to_idx[g]] = 1.0
 
@@ -232,10 +248,13 @@ def initialise(sample_n=100_000):
 
         profile = np.zeros(num_genres, dtype=np.float32)
         total_w = 0.0
+
         for i, r in rated_list:
             w = max(r - mu, 0.0)
+
             if w <= 0:
                 continue
+
             profile += w * item_genre_matrix[i]
             total_w += w
 
@@ -252,7 +271,7 @@ def initialise(sample_n=100_000):
 
     _READY = True
     _save_cache()
-    print("[Hybrid] Saved cache.")
+    # print("[Hybrid] Saved cache.")
 
 
 def user_exists(user_id):
@@ -262,13 +281,19 @@ def user_exists(user_id):
         uid = int(user_id)
     except ValueError:
         return False
+
     return uid in user_map
 
 
 def random_user_id():
     if not _READY:
         raise RuntimeError("Call initialise() first.")
-    return str(random.choice(list(user_map.keys())))
+
+    keys = list(user_map.keys())
+    choice = random.choice(keys)
+    user_id = str(choice)
+
+    return user_id
 
 
 def _svd_score(u, i):
@@ -280,17 +305,19 @@ def _svd_score(u, i):
     )
 
 
-def _cbf_score(u, i):
-    u_vec = user_profiles[u]
-    i_vec = item_genre_matrix[i]
+def _cbf_score(user_id, item_id):
+    user_profile = user_profiles[user_id]
+    item_features = item_genre_matrix[item_id]
 
-    nu = float(np.linalg.norm(u_vec))
-    ni = float(np.linalg.norm(i_vec))
-    if nu == 0.0 or ni == 0.0:
+    user_norm = float(np.linalg.norm(user_profile))
+    item_norm = float(np.linalg.norm(item_features))
+
+    if user_norm == 0.0 or item_norm == 0.0:
         return float(global_mean)
 
-    sim = float(np.dot(u_vec, i_vec) / (nu * ni))
-    return 1.0 + 4.0 * sim
+    cos_sim = float(np.dot(user_profile, item_features) / (user_norm * item_norm))
+
+    return 1.0 + 4.0 * cos_sim
 
 
 def _hybrid_score(u, i):
@@ -335,23 +362,23 @@ def recommend(user_id, k=10):
 
 def _cache_dir():
     here = Path(__file__).resolve().parent
-    d = (here / "cache").resolve()
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    dir = (here / "cache").resolve()
+    dir.mkdir(parents=True, exist_ok=True)
+    return dir
 
 
 def _cache_paths():
-    d = _cache_dir()
+    dir = _cache_dir()
     return {
-        "npz": d / "hybrid_artifacts.npz",
-        "pkl": d / "hybrid_metadata.pkl",
+        "npz": dir / "hybrid_artifacts.npz",
+        "pkl": dir / "hybrid_metadata.pkl",
     }
 
 
 def _save_cache():
     paths = _cache_paths()
 
-    # Save big numeric arrays efficiently
+    # Save big numeric arrays
     np.savez_compressed(
         paths["npz"],
         global_mean=np.array([global_mean], dtype=np.float32),
@@ -403,20 +430,20 @@ def _load_cache():
         user_profiles = arrays["user_profiles"]
 
         with open(paths["pkl"], "rb") as f:
-            meta = pickle.load(f)
+            metadata = pickle.load(f)
 
-        user_map = meta["user_map"]
-        item_map = meta["item_map"]
-        reverse_item_map = meta["reverse_item_map"]
-        movieid_to_title = meta["movieid_to_title"]
-        item_train_counts = Counter(meta["item_train_counts"])
+        user_map = metadata["user_map"]
+        item_map = metadata["item_map"]
+        reverse_item_map = metadata["reverse_item_map"]
+        movieid_to_title = metadata["movieid_to_title"]
+        item_train_counts = Counter(metadata["item_train_counts"])
         user_rated_items = defaultdict(
-            set, {u: set(v) for u, v in meta["user_rated_items"].items()}
+            set, {u: set(v) for u, v in metadata["user_rated_items"].items()}
         )
-        num_users = meta["num_users"]
-        num_items = meta["num_items"]
-        ITEM_MIN_CF = meta["ITEM_MIN_CF"]
-        ALPHA = meta["ALPHA"]
+        num_users = metadata["num_users"]
+        num_items = metadata["num_items"]
+        ITEM_MIN_CF = metadata["ITEM_MIN_CF"]
+        ALPHA = metadata["ALPHA"]
 
         _READY = True
         print("[Hybrid] Loaded cached model/artifacts.")
@@ -425,3 +452,50 @@ def _load_cache():
     except Exception as e:
         print(f"[Hybrid] Cache load failed, will rebuild. Reason: {e}")
         return False
+
+
+def _shared_prep_path():
+    return _cache_dir() / "preprocessed_shared.pkl"
+
+
+def _save_shared_preprocessed(train_trips, val_trips, test_trips):
+    payload = {
+        "user_map": user_map,
+        "item_map": item_map,
+        "reverse_item_map": reverse_item_map,
+        "train_triplets": train_trips,
+        "val_triplets": val_trips,
+        "test_triplets": test_trips,
+        "dense_threshold": 20,
+        "seed": 0,
+    }
+    with open(_shared_prep_path(), "wb") as f:
+        pickle.dump(payload, f)
+
+
+def _load_shared_preprocessed():
+    global user_map, item_map, reverse_item_map
+    global train_triplets, val_triplets, test_triplets
+
+    path = _shared_prep_path()
+    if not path.exists():
+        return False
+
+    with open(path, "rb") as f:
+        payload = pickle.load(f)
+
+    user_map = payload["user_map"]
+    item_map = payload["item_map"]
+    reverse_item_map = payload["reverse_item_map"]
+    train_triplets = payload["train_triplets"]
+    val_triplets = payload["val_triplets"]
+    test_triplets = payload["test_triplets"]
+    return True
+
+
+def _write_shared_from_cache_only():
+    raise RuntimeError(
+        "preprocessed_shared.pkl missing. "
+        "Please run once with ../dataset present to generate it, "
+        "or include preprocessed_shared.pkl in your submission."
+    )
