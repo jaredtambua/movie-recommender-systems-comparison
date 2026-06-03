@@ -8,7 +8,6 @@ import pandas as pd
 random.seed(0)
 np.random.seed(0)
 
-# ========= Globals set during initialise() =========
 _READY = False
 
 ratings_sample = None
@@ -52,7 +51,7 @@ movieid_to_title = None
 
 def _paths():
     here = Path(__file__).resolve().parent
-    dataset = (here / ".." / "dataset").resolve()
+    dataset = (here / ".." / "data").resolve()
     return {
         "ratings": dataset / "ratings.dat",
         "movies": dataset / "movies.dat",
@@ -73,7 +72,6 @@ def initialise(sample_n=100000):
     if _READY:
         return
 
-    # Try load cache first
     if _load_cache():
         if not _load_shared_preprocessed():
             _write_shared_from_cache_only()
@@ -98,7 +96,7 @@ def initialise(sample_n=100000):
 
     movieid_to_title = dict(zip(movies_df["movieId"], movies_df["title"]))
 
-    # ---------- Weighted sampling  ----------
+    # weighted sampling
     user_counts_full = ratings_df["userId"].value_counts()
     DENSE_THRESHOLD_WEIGHT = 100
 
@@ -114,7 +112,7 @@ def initialise(sample_n=100000):
         random_state=0,
     ).reset_index(drop=True)
 
-    # ---------- Map IDs to dense indices ----------
+    # map IDs to dense indices
     user_map = {old: new for new, old in enumerate(ratings_sample["userId"].unique())}
     ratings_sample["user_idx"] = ratings_sample["userId"].map(user_map)
 
@@ -134,7 +132,7 @@ def initialise(sample_n=100000):
         )
     ]
 
-    # ---------- Dense users split ----------
+    # dense users split
     user_counts_all = Counter(u for u, _, _ in triplets)
     DENSE_THRESHOLD = 20
     dense_users = {u for u, c in user_counts_all.items() if c >= DENSE_THRESHOLD}
@@ -159,7 +157,7 @@ def initialise(sample_n=100000):
     _save_shared_preprocessed(train_triplets, val_triplets, test_triplets)
     print(f"[Hyrbid] saved preprocessed dataset")
 
-    # ---------- Train SVD (SGD) ----------
+    # train SVD (SGD)
     num_factors = 20
     learning_rate = 0.02
     reg = 0.05
@@ -208,7 +206,7 @@ def initialise(sample_n=100000):
                 f"[Hybrid init] Epoch {epoch}/{num_epochs} | val RMSE: {rmse(val_triplets)}"
             )
 
-    # ---------- Build CBF (genres) ----------
+    # build CBF (genres)
     all_genres = set()
     for g_str in movies_df["genres"]:
         for g in str(g_str).split("|"):
@@ -235,7 +233,6 @@ def initialise(sample_n=100000):
             if g in genre_to_idx:
                 item_genre_matrix[internal_i, genre_to_idx[g]] = 1.0
 
-    # ---------- User profiles from TRAIN ----------
     user_ratings = defaultdict(list)
     for u, i, r in train_triplets:
         user_ratings[u].append((i, r))
@@ -261,10 +258,10 @@ def initialise(sample_n=100000):
         if total_w > 0:
             user_profiles[u] = profile / total_w
 
-    # ---------- For hybrid weighting ----------
+    # for hybrid weighting
     item_train_counts = Counter(i for _, i, _ in train_triplets)
 
-    # ---------- For excluding already-rated items ----------
+    # for excluding already-rated items
     user_rated_items = defaultdict(set)
     for u, i, _ in train_triplets:
         user_rated_items[u].add(i)
@@ -330,7 +327,6 @@ def _hybrid_score(u, i):
     return ALPHA * cf + (1.0 - ALPHA) * cbf
 
 
-# Returns: list[(title, predicted_rating)]
 def recommend(user_id, k=10):
     if not _READY:
         raise RuntimeError("Call initialise() first.")
@@ -361,10 +357,10 @@ def recommend(user_id, k=10):
 
 
 def _cache_dir():
-    here = Path(__file__).resolve().parent
-    dir = (here / "cache").resolve()
-    dir.mkdir(parents=True, exist_ok=True)
-    return dir
+    project_root = Path(__file__).resolve().parents[1]
+    directory = project_root / "models"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 def _cache_paths():
@@ -378,7 +374,7 @@ def _cache_paths():
 def _save_cache():
     paths = _cache_paths()
 
-    # Save big numeric arrays
+    # save big numeric arrays
     np.savez_compressed(
         paths["npz"],
         global_mean=np.array([global_mean], dtype=np.float32),
@@ -390,7 +386,7 @@ def _save_cache():
         user_profiles=user_profiles,
     )
 
-    # Save Python objects (mappings/titles/counts/sets)
+    # save Python objects (mappings/titles/counts/sets)
     meta = {
         "user_map": user_map,
         "item_map": item_map,
@@ -446,7 +442,7 @@ def _load_cache():
         ALPHA = metadata["ALPHA"]
 
         _READY = True
-        print("[Hybrid] Loaded cached model/artifacts.")
+        # print("[Hybrid] Loaded cached model/artifacts.")
         return True
 
     except Exception as e:

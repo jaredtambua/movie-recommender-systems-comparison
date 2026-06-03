@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-
 def banner(title):
     line = "=" * 58
     print(line)

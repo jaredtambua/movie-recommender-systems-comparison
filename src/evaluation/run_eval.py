@@ -1,4 +1,3 @@
-# run_eval.py
 import pickle
 from pathlib import Path
 from collections import defaultdict
@@ -6,18 +5,22 @@ from collections import defaultdict
 import numpy as np
 import torch
 
-import hybrid_engine as hybrid
-import ncf_engine as ncf
+from src import hybrid_engine as hybrid
+from src import ncf_engine as ncf
 
 
-# Shared split loader
 def _load_shared_payload():
-    cache_dir = Path(hybrid.__file__).resolve().parent / "cache"
-    path = cache_dir / "preprocessed_shared.pkl"
+    project_root = Path(__file__).resolve().parents[2]
+
+    models_dir = project_root / "models"
+    path = models_dir / "preprocessed_shared.pkl"
+
     if not path.exists():
         raise RuntimeError(
-            f"Missing {path}. Run hybrid_engine once with ../dataset present to generate it."
+            f"Missing {path}. "
+            "Please ensure the models directory contains the pretrained artefacts."
         )
+
     with open(path, "rb") as f:
         return pickle.load(f)
 

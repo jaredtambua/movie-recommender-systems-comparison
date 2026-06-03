@@ -1,5 +1,9 @@
-dataset
-__pycache__
-COMP3607 RS Coursework - RecSys specifications 2025.pdf
-report_notes.md
-code/dump.py
+__pycache__/
+*.pyc
+.vscode/
+.venv/
+venv/
+data/*.dat
+*.zip
+user_ids.txt
+*.log
