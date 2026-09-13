@@ -46,7 +46,7 @@ user_rated_items = None
 
 def _paths():
     here = Path(__file__).resolve().parent
-    dataset = (here / ".." / "dataset").resolve()
+    dataset = (here / ".." / "data").resolve()
     return {
         "ratings": dataset / "ratings.dat",
         "movies": dataset / "movies.dat",
@@ -177,7 +177,7 @@ def initialise(sample_n=100000):
     if not _load_shared_preprocessed():
         raise RuntimeError(
             "Missing cache/preprocessed_shared.pkl. "
-            "Run hybrid_engine once with ../dataset present to generate it."
+            "Run hybrid_engine once with ../data present to generate it."
         )
 
     p = _paths()
@@ -457,6 +457,7 @@ def _build_features_from_dataset():
         encoding="latin-1",
         names=["movieId", "title", "genres"],
     )
+
     movieid_to_title = dict(zip(movies_df["movieId"], movies_df["title"]))
 
     num_users = len(user_map)

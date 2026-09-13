@@ -2,13 +2,13 @@
 
 ### Overview
 
-This project implements and evaluates two movie recommendation systems using the MovieLens 1M dataset.
+This project implements and evaluates two movie recommendation systems using a 100,000-rating sample drawn from the MovieLens 1M dataset.
 
-The objective is to compare a traditional recommendation approach against a modern neural-network-based recommender while providing an interactive recommendation experience through a command-line interface.
+The objective is to compare a traditional recommendation approach against a neural-network-based recommender while providing an interactive recommendation experience through a command-line interface.
 
 The project includes:
 
-* Hybrid Recommender System (SVD + Content-Based Filtering)
+* Hybrid Recommender System (Matrix Factorisation + Content-Based Filtering)
 * Neural Collaborative Filtering (NCF)
 * Shared evaluation pipeline
 * Pretrained model artefacts for immediate execution
@@ -18,14 +18,14 @@ The project includes:
 
 ### Recommendation Systems
 
-#### 1. Hybrid Recommender (SVD + Content-Based Filtering)
+#### 1. Hybrid Recommender (Matrix Factorisation + Content-Based Filtering)
 
 The hybrid system combines:
 
-* Collaborative Filtering using Matrix Factorisation (SVD) with stochastic gradient descent.
+* Collaborative Filtering using biased Matrix Factorisation trained with stochastic gradient descent
 * Content-Based Filtering using movie genre information
 
-The collaborative component captures user-item interactions, while the content-based component helps address sparsity and cold-item situations.
+The collaborative component captures user-item interaction patterns, while the genre-based component provides an additional signal for sparse and low-support items.
 
 #### 2. Neural Collaborative Filtering (NCF)
 
@@ -36,19 +36,21 @@ The neural recommender uses:
 * User demographic features
 * Movie genre features
 
-A neural network learns latent user preferences and predicts ratings through non-linear interactions between users and movies.
+The NCF-style model performs explicit-rating regression, augmenting learned user and movie embeddings with user demographic and movie genre features. A neural network models non-linear interactions between these representations to predict ratings.
 
 ---
 
 ### Dataset
 
-This project uses the MovieLens 1M dataset.
+This project uses MovieLens 1M as its source dataset.
 
 MovieLens is a widely used benchmark dataset for recommender systems research and contains:
 
 * 1 million movie ratings
 * Approximately 6,000 users
 * Approximately 4,000 movies
+
+The experiments use a deterministic, activity-weighted sample of 100,000 ratings drawn from MovieLens 1M. Both recommenders use the same preprocessed sample and held-out evaluation data to enable a consistent comparison.
 
 The dataset is not included in this repository.
 
@@ -62,7 +64,6 @@ data/
 ```
 
 Dataset source:
-
 https://www.kaggle.com/datasets/odedgolden/movielens-1m-dataset
 
 ---
@@ -103,7 +104,7 @@ python main.py
 
 The application provides a menu allowing you to choose between:
 
-1. Hybrid Recommender (SVD + Content-Based Filtering)
+1. Hybrid Recommender (Matrix Factorisation + Content-Based Filtering)
 2. Neural Collaborative Filtering (NCF)
 
 You can:
@@ -116,27 +117,27 @@ You can:
 
 ### Evaluation
 
+Both recommenders are evaluated on the same held-out test split of 32,535 ratings.
+
+The evaluation uses:
+
+* **RMSE** — measures rating-prediction error (lower is better)
+* **Serendipity@10** — an offline proxy for relevant recommendations that differ from a user's established genre profile (higher is better)
+
 Run the evaluation pipeline:
 
 ```bash
 python -m src.evaluation.run_eval
 ```
 
-The evaluation framework compares the recommender systems using metrics including:
+| Model           |     RMSE ↓ | Serendipity@10 ↑ |
+| --------------- | ---------: | ---------------: |
+| Hybrid MF + CBF |     1.0087 |           0.5082 |
+| NCF             | **0.9971** |       **0.5135** |
 
-* RMSE
-* Serendipity
+The NCF model achieved slightly lower rating-prediction error and slightly higher serendipity than the hybrid approach. The relatively small differences suggest that both approaches perform comparably under this evaluation setup.
 
----
-
-### Future Improvements
-
-Potential extensions include:
-
-* Web-based interface
-* Real-time recommendation serving
-* Additional recommendation metrics
-* Deployment using Docker and cloud infrastructure
+Serendipity@10 is calculated as an offline proxy using relevant held-out items and their genre dissimilarity from each user's training-history profile.
 
 ---
 
@@ -147,11 +148,11 @@ Potential extensions include:
 * Pandas
 * PyTorch
 * MovieLens 1M Dataset
-* Matrix Factorisation (SVD)
+* Matrix Factorisation
 * Content-Based Filtering
 * Neural Collaborative Filtering
 
---- 
+---
 
 ### Demo Screenshots
 
